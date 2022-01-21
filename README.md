@@ -2,6 +2,10 @@
 This is a Livepslit script that randomizes your skin color in Dark Souls 
 Prepare to Die Edition and Dark Souls Remastered.
 
+### How to Download </br>
+In the top right corner, there is a green button that says "Code". </br>
+Click it, then click "Download Zip" in the dropdown menu.
+
 ### How to Use </br>
 In Livesplit: Edit Layout -> + -> Control -> Scriptable Autosplitter </br>
 Edit the Scriptable Autosplitter you've added and select the .asl file.
