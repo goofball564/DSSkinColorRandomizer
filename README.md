@@ -1,5 +1,5 @@
 # DSSkinColorRandomizer
-This is a Livepslit script that randomizes your skin color in Dark Souls 
+This is a LiveSplit script that randomizes your skin color in Dark Souls 
 Prepare to Die Edition and Dark Souls Remastered.
 
 ### How to Download </br>
