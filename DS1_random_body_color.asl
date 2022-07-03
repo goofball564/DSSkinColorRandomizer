@@ -1,30 +1,35 @@
-state("DARKSOULS")
-{
-}
+state("DARKSOULS") {}
 
-state("DarkSoulsRemastered")
-{
-}
+state("DarkSoulsRemastered") {}
 
 init
 {
     /* USER CONFIGURABLE SECTION */
 
+    /* lower --> more often, higher --> less often */
     vars.SkinColorChangeRate = 30;
-    refreshRate = 60;
 
     /* END OF USER CONFIGURABLE SECTION */
     
-    /* VARS */
-
+    /* program state vars */
     vars.UpdateIterationNum = 0;
     vars.Rng = new Random();
 
-    /* MEMORY STUFF */
+    /* PTR FUNCS */
 
-    vars.GetAOBRelativePtr = (Func<SignatureScanner, SigScanTarget, int, int, System.IntPtr>) ((scanner, sst, aobOffset, instructionLength) => 
+    vars.GetAOBAbsolutePtr = (Func<SignatureScanner, SigScanTarget, int, IntPtr>) ((scanner, sst, aobOffset) => 
     {
-        System.IntPtr ptr = scanner.Scan(sst);
+        IntPtr tempPtr;
+        while (!game.ReadPointer(scanner.Scan(sst) + aobOffset, out tempPtr))
+        {
+            Thread.Sleep(500);
+        }
+        return tempPtr;
+    });
+
+    vars.GetAOBRelativePtr = (Func<SignatureScanner, SigScanTarget, int, int, IntPtr>) ((scanner, sst, aobOffset, instructionLength) => 
+    {
+        IntPtr ptr = scanner.Scan(sst);
         int offset = memory.ReadValue<int>(ptr + aobOffset);
         return ptr + offset + instructionLength;
     });
@@ -33,34 +38,207 @@ init
     {
         IntPtr tempPtr = (IntPtr) 0;
 
-        deepPointer.DerefOffsets(game, out tempPtr);
-        while(tempPtr == (IntPtr) 0)
+        while(!deepPointer.DerefOffsets(game, out tempPtr))
         {
             Thread.Sleep(500);
-            deepPointer.DerefOffsets(game, out tempPtr);
         }
 
         return tempPtr;
     });
 
+    vars.CharacterIsLoaded = (Func<bool>) (() =>
+    {
+        IntPtr tempPtr = (IntPtr) 0;
+        return vars.CharacterLoadedDeepPtr.DerefOffsets(game, out tempPtr);
+    });
+
+    /* MEMORY STUFF */
+
+    vars.Watchers = new MemoryWatcherList();
     SignatureScanner sigScanner = new SignatureScanner(game, modules.First().BaseAddress, modules.First().ModuleMemorySize);
 
     if (game.ProcessName.ToString() == "DARKSOULS")
     {
         SigScanTarget playerAOB = new SigScanTarget(0, "A1 ?? ?? ?? ?? 8B 40 34 53 32");
-        System.IntPtr playerPtr = (System.IntPtr) memory.ReadValue<int>(sigScanner.Scan(playerAOB) + 1);
-
+        IntPtr playerPtr = vars.GetAOBAbsolutePtr(sigScanner, playerAOB, 1);
         vars.SkinColorDeepPtr = new DeepPointer(playerPtr, 0x8, 0x3D2);
     }
     else if (game.ProcessName.ToString() == "DarkSoulsRemastered")
     {
         SigScanTarget playerAOB = new SigScanTarget(0, "48 8B 05 ?? ?? ?? ?? 45 33 ED 48 8B F1 48 85 C0");
-        System.IntPtr playerPtr = vars.GetAOBRelativePtr(sigScanner, playerAOB, 3, 7);
-
+        IntPtr playerPtr = vars.GetAOBRelativePtr(sigScanner, playerAOB, 3, 7);
         vars.SkinColorDeepPtr = new DeepPointer(playerPtr, 0x10, 0x512);
     }
 
     vars.SkinColorPtr = vars.GetLowestLevelPtr(vars.SkinColorDeepPtr);
+}
+
+/* WHERE THE MAGIC HAPPENS */
+update
+{
+    if(vars.UpdateIterationNum % vars.SkinColorChangeRate == 0)
+    {
+        double maxH = 360;
+        double minH = 0;
+
+        double maxS = 1;
+        double minS = 0.5;
+
+        double maxL = 0.9;
+        double minL = 0.4;
+
+        var setHueSettings = new List<string>();
+        foreach (string s in vars.HSettings)
+        {
+            if (settings[s])
+            {
+                setHueSettings.Add(s);
+            }
+        }
+
+        if (setHueSettings.Count > 0)
+        {
+            int index = vars.Rng.Next(setHueSettings.Count);
+            string selectedHueSetting = setHueSettings[index];
+
+            minH = vars.MinH[selectedHueSetting];
+            maxH = vars.MaxH[selectedHueSetting];
+        }
+        
+        double[] hsl = new double[3];
+        hsl[0] = vars.Rng.NextDouble() * (maxH - minH) + minH;
+        hsl[1] = vars.Rng.NextDouble();
+        hsl[2] = vars.Rng.NextDouble();
+
+        if (hsl[0] >= 360)
+        {
+            hsl[0] -= 360;
+        }
+
+        if (settings["vivid"])
+        {
+            hsl[2] = hsl[2] * (maxL - minL) + minL;
+            
+            if (hsl[2] > 0.5)
+            {
+                minS += (maxS - minS) / (maxL - 0.5) * (hsl[2] - 0.5);
+            }       
+            else if (hsl[2] < 0.5)
+            {
+                minS += (minS - maxS) / (0.5 - minL) * (hsl[2] - 0.5);
+            }
+
+            hsl[1] = hsl[1] * (maxS - minS) + minS;     
+        }
+
+        double[] bgr = vars.HSLToBGR(hsl);
+
+        int[] prediction = vars.Predict(bgr, vars.Weights, vars.Biases);
+
+        IntPtr ptr = vars.SkinColorPtr;
+        byte[] bytes = vars.ToBytes(prediction);
+        game.WriteBytes(ptr, bytes);
+    }
+
+    vars.UpdateIterationNum++;
+}
+
+startup
+{
+    /* CONFIGURABLE SECTION */
+
+    /* lower --> reduced CPU usage, updates less often; not precise */
+    refreshRate = 66;
+
+    /* END OF CONFIGURABLE SECTION */
+
+    settings.Add("vivid", false, "No Dark, Unsaturated Colors");
+    settings.SetToolTip("vivid", "Uses an arbitrary algorithm to restrict the saturation and lightness of the generated skin colors.");
+
+    vars.HSettings = new List<string>();
+    vars.MinH = new Dictionary<string, double>();
+    vars.MaxH = new Dictionary<string, double>();
+    
+    string hueData = @"
+                        Red (and Pink), 345, 375
+                        Orange, 30, 40
+                        Yellow, 45, 65
+                        Green, 80, 140
+                        Cyan, 150, 200
+                        Blue, 210, 260
+                        Violet, 265, 275
+                        Magenta, 280, 315
+                        Warm Colors, 345, 420
+                        Cool Colors, 90, 315";
+
+    settings.Add("hue", false, "Restrict Color Hue");
+
+    var reader = new StringReader(hueData);
+    for (string line = reader.ReadLine(); line != null; line = reader.ReadLine())
+    {
+        line = line.Trim();
+        if (line != "")
+        {
+            var arr = line.Split(',');
+            string color = arr[0].Trim();
+            double min = Double.Parse(arr[1].Trim());
+            double max = Double.Parse(arr[2].Trim());
+
+            string description = color;
+
+            settings.Add(color, false, description, "hue");
+            vars.HSettings.Add(color);
+            vars.MinH[color] = min;
+            vars.MaxH[color] = max;
+        }
+    }
+
+    /* COLOR MODEL CONVERSION FUNC */
+
+    vars.HSLToBGR = (Func<double[], double[]>) ((hsl) =>
+    {
+        double H = hsl[0];
+        double S = hsl[1];
+        double L = hsl[2];
+
+        double C = (1 - Math.Abs(2 * L - 1))  * S;
+        double X = C * ( 1 - Math.Abs( (H / 60) % 2 - 1 ) );
+        double m = L - C / 2;
+
+        double[] bgr;
+
+        if (H >= 0 && H < 60)
+        {
+            bgr = new double[] {0, X, C};
+        }
+        else if (H >= 60 && H < 120)
+        {
+            bgr = new double[] {0, C, X};
+        }
+        else if (H >= 120 && H < 180)
+        {
+            bgr = new double[] {X, C, 0};
+        }
+        else if (H >= 180 && H < 240)
+        {
+            bgr = new double[] {C, X, 0};
+        }
+        else if (H >= 240 && H < 300)
+        {
+            bgr = new double[] {C, 0, X};
+        }
+        else // red
+        {
+            bgr = new double[] {X, 0, C};
+        }
+
+        for (int i = 0; i < bgr.Length; i++)
+        {
+            bgr[i] = Math.Round((bgr[i] + m) * 255);
+        }
+
+        return bgr;
+    });
 
     /* NEURAL NET FUNCS (credit to AndrovT; adapted from his Color Picker) */
 
@@ -144,29 +322,7 @@ init
     });
 
     /* END OF COPY-PASTED SECTION */
-}
 
-update
-{
-    if(vars.UpdateIterationNum % vars.SkinColorChangeRate == 0)
-    {
-        double[] rgb = new double[3];
-        rgb[0] = Convert.ToSingle(vars.Rng.Next(0, 255));
-        rgb[1] = Convert.ToSingle(vars.Rng.Next(0, 255));
-        rgb[2] = Convert.ToSingle(vars.Rng.Next(0, 255));
-
-        int[] prediction = vars.Predict(rgb, vars.Weights, vars.Biases);
-
-        IntPtr ptr = vars.SkinColorPtr;
-        byte[] bytes = vars.ToBytes(prediction);
-        game.WriteBytes(ptr, bytes);         
-    }
-
-    vars.UpdateIterationNum++;
-}
-
-startup
-{
     /* MAGIC (neural network weights and biases, credit to AndrovT) */
 
     vars.Biases = new double[][] {new double[] {128.0088348388672, 128.00262451171875, 127.99850463867188, 127.99785614013672, 127.99409484863281, 128.00035095214844, 127.99958038330078, 128.00067138671875, 127.99253845214844, 128.00372314453125, 128.0002899169922, 127.9962387084961, 127.991943359375, 127.99756622314453, 128.00027465820312, 128.0043487548828, 127.99729919433594, 127.98825073242188, 127.99791717529297, 127.99807739257812, 127.99784088134766, 127.99565124511719, 128.02297973632812, 128.002685546875, 127.99893951416016, 128.001708984375, 127.98992919921875, 127.98856353759766, 128.0026397705078, 127.99933624267578, 127.99331665039062, 128.00184631347656, 128.00062561035156, 127.98902893066406, 127.99394226074219, 127.99971771240234, 127.99537658691406, 128.00112915039062, 127.99994659423828, 128.00439453125, 127.9961929321289, 127.99665832519531, 128.0043487548828, 128.00405883789062, 127.99897766113281, 128.00367736816406, 127.9959716796875, 127.99524688720703, 127.9972152709961, 127.9932861328125}, new double[] {127.9893798828125, 128.0006561279297, 127.99063110351562, 128.00643920898438, 127.99911499023438, 127.98713684082031, 127.99280548095703, 127.99655151367188, 127.98944091796875, 128.00250244140625, 127.99988555908203, 127.99825286865234, 127.99931335449219, 128.01783752441406, 127.99848175048828, 128.00540161132812, 127.99180603027344, 127.9996337890625, 128.0061492919922, 127.99889373779297, 128.00384521484375, 127.9937744140625, 128.00537109375, 128.00701904296875, 128.0052032470703, 127.99630737304688, 127.99394226074219, 127.9968032836914, 128.00572204589844, 128.0021514892578, 127.99417114257812, 127.99954986572266, 127.99503326416016, 127.99662780761719, 128.00106811523438, 127.99896240234375, 128.0007781982422, 127.9998550415039, 128.007568359375, 128.00148010253906, 128.0055694580078, 128.0072784423828, 128.00088500976562, 128.0121612548828, 128.00912475585938, 127.99977111816406, 127.9988021850586, 128.0050811767578, 127.99986267089844, 128.00637817382812}, new double[] {127.99578094482422, 128.00164794921875, 128.0089874267578, 127.99644470214844, 128.0032958984375, 128.00125122070312, 127.99056243896484, 128.0111541748047, 128.01051330566406, 128.0104522705078, 128.0026092529297, 128.00767517089844, 128.0032196044922, 127.99771118164062, 128.00599670410156, 128.0095977783203, 128.02772521972656, 128.00123596191406, 127.99751281738281, 128.01821899414062, 128.01292419433594, 128.00181579589844, 128.01126098632812, 128.01705932617188, 128.004150390625, 128.01731872558594, 127.96253204345703, 128.01881408691406, 128.04550170898438, 128.00009155273438, 128.002685546875, 128.0144500732422, 128.0106658935547, 128.001220703125, 128.00611877441406, 128.015869140625, 128.00856018066406, 128.00030517578125, 128.0019989013672, 128.012451171875, 127.98710632324219, 128.01487731933594, 128.0211181640625, 128.0105743408203, 128.00552368164062, 128.02687072753906, 128.01513671875, 128.0216827392578, 128.02542114257812, 127.99530029296875}};
