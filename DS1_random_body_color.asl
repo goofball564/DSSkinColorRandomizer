@@ -7,7 +7,7 @@ init
     /* USER CONFIGURABLE SECTION */
 
     /* lower --> more often, higher --> less often */
-    vars.SkinColorChangeRate = 30;
+    vars.SkinColorChangeRate = 20;
 
     /* END OF USER CONFIGURABLE SECTION */
     
@@ -185,7 +185,7 @@ startup
     /* CONFIGURABLE SECTION */
 
     /* lower --> reduced CPU usage, updates less often; not precise */
-    refreshRate = 66;
+    refreshRate = 30;
 
     /* END OF CONFIGURABLE SECTION */
 
