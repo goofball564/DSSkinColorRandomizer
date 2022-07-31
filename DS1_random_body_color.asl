@@ -17,32 +17,46 @@ init
 
     /* PTR FUNCS */
 
-    vars.GetAOBAbsolutePtr = (Func<SignatureScanner, SigScanTarget, int, IntPtr>) ((scanner, sst, aobOffset) => 
+    vars.GetAOBRelativePtr = (Func<SignatureScanner, SigScanTarget, int, IntPtr>) ((scanner, sst, instructionLength) => 
     {
-        IntPtr tempPtr;
-        while (!game.ReadPointer(scanner.Scan(sst) + aobOffset, out tempPtr))
+        int aobOffset = sst.Signatures[0].Offset;
+
+        IntPtr ptr = scanner.Scan(sst);
+        if (ptr == default(IntPtr))
         {
-            Thread.Sleep(500);
+            throw new Exception("AOB Scan Unsuccessful");
         }
-        return tempPtr;
+
+        int offset = memory.ReadValue<int>(ptr);
+
+        return ptr - aobOffset + offset + instructionLength;
     });
 
-    vars.GetAOBRelativePtr = (Func<SignatureScanner, SigScanTarget, int, int, IntPtr>) ((scanner, sst, aobOffset, instructionLength) => 
+    // Needs to have same signature as other AOB Ptr Func; ignoredValue is ignored.
+    vars.GetAOBAbsolutePtr = (Func<SignatureScanner, SigScanTarget, int, IntPtr>) ((scanner, sst, ignoredValue) => 
     {
         IntPtr ptr = scanner.Scan(sst);
-        int offset = memory.ReadValue<int>(ptr + aobOffset);
-        return ptr + offset + instructionLength;
+        if (ptr == default(IntPtr))
+        {
+            throw new Exception("AOB Scan Unsuccessful");
+        }
+
+        IntPtr tempPtr;
+        if (!game.ReadPointer(ptr, out tempPtr))
+        {
+            throw new Exception("AOB scan did not yield valid pointer");
+        }
+
+        return tempPtr;
     });
 
     vars.GetLowestLevelPtr = (Func<DeepPointer, IntPtr>) ((deepPointer) => 
     {
-        IntPtr tempPtr = (IntPtr) 0;
-
-        while(!deepPointer.DerefOffsets(game, out tempPtr))
+        IntPtr tempPtr;
+        if (!deepPointer.DerefOffsets(game, out tempPtr))
         {
-            Thread.Sleep(500);
+           tempPtr = IntPtr.Zero;
         }
-
         return tempPtr;
     });
 
@@ -59,18 +73,40 @@ init
 
     if (game.ProcessName.ToString() == "DARKSOULS")
     {
-        SigScanTarget playerAOB = new SigScanTarget(0, "A1 ?? ?? ?? ?? 8B 40 34 53 32");
-        IntPtr playerPtr = vars.GetAOBAbsolutePtr(sigScanner, playerAOB, 1);
-        vars.SkinColorDeepPtr = new DeepPointer(playerPtr, 0x8, 0x3D2);
+        vars.PlayerAOB = new SigScanTarget(1, "A1 ?? ?? ?? ?? 8B 40 34 53 32");
+        vars.SkinColorOffsets = new int[] {0x8, 0x3D2};
+        vars.GetAOBPtr = vars.GetAOBAbsolutePtr;
     }
     else if (game.ProcessName.ToString() == "DarkSoulsRemastered")
     {
-        SigScanTarget playerAOB = new SigScanTarget(0, "48 8B 05 ?? ?? ?? ?? 45 33 ED 48 8B F1 48 85 C0");
-        IntPtr playerPtr = vars.GetAOBRelativePtr(sigScanner, playerAOB, 3, 7);
-        vars.SkinColorDeepPtr = new DeepPointer(playerPtr, 0x10, 0x512);
+        vars.PlayerAOB = new SigScanTarget(3, "48 8B 05 ?? ?? ?? ?? 45 33 ED 48 8B F1 48 85 C0");
+        vars.SkinColorOffsets = new int[] {0x10, 0x512};
+        vars.GetAOBPtr = vars.GetAOBRelativePtr;
     }
 
-    vars.SkinColorPtr = vars.GetLowestLevelPtr(vars.SkinColorDeepPtr);
+    // Stopwatch is defined in startup block and is used to mimic
+    // Thread.Sleep without locking the Livesplit UI; 
+    // If an AOB scan fails, retry after a specified number of milliseconds.
+    const int MILLISECONDS_TO_WAIT_BEFORE_RESCAN = 1000;
+    if (!vars.CooldownStopwatch.IsRunning || vars.CooldownStopwatch.ElapsedMilliseconds > MILLISECONDS_TO_WAIT_BEFORE_RESCAN)
+    {
+        vars.CooldownStopwatch.Start();
+        try
+        {
+            vars.PlayerPtr = vars.GetAOBPtr(sigScanner, vars.PlayerAOB, 7);
+        }
+        catch (Exception e)
+        {
+            vars.CooldownStopwatch.Restart();
+            throw new Exception(e.ToString() + "\ninit{} needs to be recalled; base pointer creation unsuccessful");
+        }
+    }
+    else
+    {
+        throw new Exception("init{} needs to be recalled; waiting to rescan for base pointers");
+    }
+        
+    vars.SkinColorDeepPtr = new DeepPointer(vars.PlayerPtr, vars.SkinColorOffsets);
 }
 
 /* WHERE THE MAGIC HAPPENS */
@@ -78,66 +114,67 @@ update
 {
     if(vars.UpdateIterationNum % vars.SkinColorChangeRate == 0)
     {
-        double maxH = 360;
-        double minH = 0;
-
-        double maxS = 1;
-        double minS = 0.5;
-
-        double maxL = 0.9;
-        double minL = 0.4;
-
-        var setHueSettings = new List<string>();
-        foreach (string s in vars.HSettings)
+        IntPtr skinColorPtr = vars.GetLowestLevelPtr(vars.SkinColorDeepPtr);
+        if (skinColorPtr != IntPtr.Zero)
         {
-            if (settings[s])
+            double maxH = 360;
+            double minH = 0;
+
+            double maxS = 1;
+            double minS = 0.5;
+
+            double maxL = 0.9;
+            double minL = 0.4;
+
+            var setHueSettings = new List<string>();
+            foreach (string s in vars.HSettings)
             {
-                setHueSettings.Add(s);
+                if (settings[s])
+                {
+                    setHueSettings.Add(s);
+                }
             }
-        }
 
-        if (setHueSettings.Count > 0)
-        {
-            int index = vars.Rng.Next(setHueSettings.Count);
-            string selectedHueSetting = setHueSettings[index];
+            if (setHueSettings.Count > 0)
+            {
+                int index = vars.Rng.Next(setHueSettings.Count);
+                string selectedHueSetting = setHueSettings[index];
 
-            minH = vars.MinH[selectedHueSetting];
-            maxH = vars.MaxH[selectedHueSetting];
-        }
-        
-        double[] hsl = new double[3];
-        hsl[0] = vars.Rng.NextDouble() * (maxH - minH) + minH;
-        hsl[1] = vars.Rng.NextDouble();
-        hsl[2] = vars.Rng.NextDouble();
-
-        if (hsl[0] >= 360)
-        {
-            hsl[0] -= 360;
-        }
-
-        if (settings["vivid"])
-        {
-            hsl[2] = hsl[2] * (maxL - minL) + minL;
+                minH = vars.MinH[selectedHueSetting];
+                maxH = vars.MaxH[selectedHueSetting];
+            }
             
-            if (hsl[2] > 0.5)
+            double[] hsl = new double[3];
+            hsl[0] = vars.Rng.NextDouble() * (maxH - minH) + minH;
+            hsl[1] = vars.Rng.NextDouble();
+            hsl[2] = vars.Rng.NextDouble();
+
+            if (hsl[0] >= 360)
             {
-                minS += (maxS - minS) / (maxL - 0.5) * (hsl[2] - 0.5);
-            }       
-            else if (hsl[2] < 0.5)
-            {
-                minS += (minS - maxS) / (0.5 - minL) * (hsl[2] - 0.5);
+                hsl[0] -= 360;
             }
 
-            hsl[1] = hsl[1] * (maxS - minS) + minS;     
+            if (settings["vivid"])
+            {
+                hsl[2] = hsl[2] * (maxL - minL) + minL;
+                
+                if (hsl[2] > 0.5)
+                {
+                    minS += (maxS - minS) / (maxL - 0.5) * (hsl[2] - 0.5);
+                }       
+                else if (hsl[2] < 0.5)
+                {
+                    minS += (minS - maxS) / (0.5 - minL) * (hsl[2] - 0.5);
+                }
+
+                hsl[1] = hsl[1] * (maxS - minS) + minS;     
+            }
+
+            double[] bgr = vars.HSLToBGR(hsl);
+            int[] prediction = vars.Predict(bgr, vars.Weights, vars.Biases);
+            byte[] bytes = vars.ToBytes(prediction);
+            game.WriteBytes(skinColorPtr, bytes);
         }
-
-        double[] bgr = vars.HSLToBGR(hsl);
-
-        int[] prediction = vars.Predict(bgr, vars.Weights, vars.Biases);
-
-        IntPtr ptr = vars.SkinColorPtr;
-        byte[] bytes = vars.ToBytes(prediction);
-        game.WriteBytes(ptr, bytes);
     }
 
     vars.UpdateIterationNum++;
@@ -151,6 +188,8 @@ startup
     refreshRate = 66;
 
     /* END OF CONFIGURABLE SECTION */
+
+    vars.CooldownStopwatch = new Stopwatch();
 
     settings.Add("vivid", false, "No Dark, Unsaturated Colors");
     settings.SetToolTip("vivid", "Uses an arbitrary algorithm to restrict the saturation and lightness of the generated skin colors.");
