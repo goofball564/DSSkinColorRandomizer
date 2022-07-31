@@ -126,51 +126,75 @@ update
             double maxL = 0.9;
             double minL = 0.4;
 
-            var setHueSettings = new List<string>();
-            foreach (string s in vars.HSettings)
+            double[] bgr;
+
+            var setCustomColorSettings = new List<string>();
+            foreach (string color in vars.CustomColors)
             {
-                if (settings[s])
+                if (settings[color])
                 {
-                    setHueSettings.Add(s);
+                    setCustomColorSettings.Add(color);
                 }
             }
 
-            if (setHueSettings.Count > 0)
+            if (setCustomColorSettings.Count > 0)
             {
-                int index = vars.Rng.Next(setHueSettings.Count);
-                string selectedHueSetting = setHueSettings[index];
-
-                minH = vars.MinH[selectedHueSetting];
-                maxH = vars.MaxH[selectedHueSetting];
+                int index = vars.Rng.Next(setCustomColorSettings.Count);
+                string selectedCustomColorSetting = setCustomColorSettings[index];
+                var color = System.Drawing.ColorTranslator.FromHtml(selectedCustomColorSetting);
+                bgr = new double[] {color.B, color.G, color.R};
             }
-            
-            double[] hsl = new double[3];
-            hsl[0] = vars.Rng.NextDouble() * (maxH - minH) + minH;
-            hsl[1] = vars.Rng.NextDouble();
-            hsl[2] = vars.Rng.NextDouble();
-
-            if (hsl[0] >= 360)
+            else
             {
-                hsl[0] -= 360;
-            }
-
-            if (settings["vivid"])
-            {
-                hsl[2] = hsl[2] * (maxL - minL) + minL;
-                
-                if (hsl[2] > 0.5)
+                // If custom color settings aren't selected, generate random color
+                // with selected hue settings, if any
+                var setHueSettings = new List<string>();
+                foreach (string s in vars.HSettings)
                 {
-                    minS += (maxS - minS) / (maxL - 0.5) * (hsl[2] - 0.5);
-                }       
-                else if (hsl[2] < 0.5)
-                {
-                    minS += (minS - maxS) / (0.5 - minL) * (hsl[2] - 0.5);
+                    if (settings[s])
+                    {
+                        setHueSettings.Add(s);
+                    }
                 }
 
-                hsl[1] = hsl[1] * (maxS - minS) + minS;     
+                if (setHueSettings.Count > 0)
+                {
+                    int index = vars.Rng.Next(setHueSettings.Count);
+                    string selectedHueSetting = setHueSettings[index];
+
+                    minH = vars.MinH[selectedHueSetting];
+                    maxH = vars.MaxH[selectedHueSetting];
+                }
+
+                double[] hsl = new double[3];
+                hsl[0] = vars.Rng.NextDouble() * (maxH - minH) + minH;
+                hsl[1] = vars.Rng.NextDouble();
+                hsl[2] = vars.Rng.NextDouble();
+
+                if (hsl[0] >= 360)
+                {
+                    hsl[0] -= 360;
+                }
+
+                if (settings["vivid"])
+                {
+                    hsl[2] = hsl[2] * (maxL - minL) + minL;
+                    
+                    if (hsl[2] > 0.5)
+                    {
+                        minS += (maxS - minS) / (maxL - 0.5) * (hsl[2] - 0.5);
+                    }       
+                    else if (hsl[2] < 0.5)
+                    {
+                        minS += (minS - maxS) / (0.5 - minL) * (hsl[2] - 0.5);
+                    }
+
+                    hsl[1] = hsl[1] * (maxS - minS) + minS;     
+                }
+
+                bgr = vars.HSLToBGR(hsl);
             }
 
-            double[] bgr = vars.HSLToBGR(hsl);
             int[] prediction = vars.Predict(bgr, vars.Weights, vars.Biases);
             byte[] bytes = vars.ToBytes(prediction);
             game.WriteBytes(skinColorPtr, bytes);
@@ -187,12 +211,24 @@ startup
     /* lower --> reduced CPU usage, updates less often; not precise */
     refreshRate = 30;
 
+    vars.CustomColors = new List<string>
+    {
+        "#FF00FF", // example; add to the list
+    };
+
     /* END OF CONFIGURABLE SECTION */
 
     vars.CooldownStopwatch = new Stopwatch();
 
+    settings.Add("custom", false, "Use Custom Color");
+    settings.SetToolTip("custom", "To add custom colors, you must manually add to a list in the script.\nWhen selected, colors are not randomly generated, and hue/lightness/saturation settings are ignored.");
+    foreach (string color in vars.CustomColors)
+    {
+        settings.Add(color, false, color, "custom");
+    }
+
     settings.Add("vivid", false, "No Dark, Unsaturated Colors");
-    settings.SetToolTip("vivid", "Uses an arbitrary algorithm to restrict the saturation and lightness of the generated skin colors.");
+    settings.SetToolTip("vivid", "Uses an arbitrary algorithm to restrict the saturation and lightness of the randomly generated skin colors.");
 
     vars.HSettings = new List<string>();
     vars.MinH = new Dictionary<string, double>();
@@ -211,6 +247,7 @@ startup
                         Cool Colors, 90, 315";
 
     settings.Add("hue", false, "Restrict Color Hue");
+    settings.SetToolTip("hue", "Color ranges may not be strictly accurate; i.e., if you select yellow, you may see some shades of orange and green.");
 
     var reader = new StringReader(hueData);
     for (string line = reader.ReadLine(); line != null; line = reader.ReadLine())
